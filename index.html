@@ -103,14 +103,9 @@ const APPS = [
     desc: "Review the Equipment Master by site, search by unit or serial, and submit trade-reassignment or issue requests.",
     href: "inventory.html",
     status: "live"
-  },
-  {
-    eyebrow: "Field",
-    title: "Photo Capture",
-    desc: "Capture new asset records with photos in the field and export to CSV. (Placeholder card — wire up when ready.)",
-    href: "capture.html",
-    status: "soon"
   }
+  // Add future features here, e.g.:
+  // { eyebrow:"Field", title:"My Tool", desc:"…", href:"mytool.html", status:"live" }
 ];
 
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
