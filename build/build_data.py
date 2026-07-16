@@ -155,7 +155,7 @@ def build(xlsx_path, out_dir):
     with open(os.path.join(out_dir, "sites.json"), "w", encoding="utf-8") as f:
         json.dump(index, f)
 
-    m = re.search(r"V1\.\d+", os.path.basename(xlsx_path))
+    m = re.search(r"V\d+\.\d+", os.path.basename(xlsx_path))
     meta = {
         "builtAt": os.environ.get("BUILD_TS", ""),
         "sourceVersion": m.group(0) if m else "",
@@ -168,13 +168,16 @@ def build(xlsx_path, out_dir):
 
 
 def newest_source(source_dir):
-    files = glob.glob(os.path.join(source_dir, "Equipment Master V1.*.xlsx"))
+    files = glob.glob(os.path.join(source_dir, "Equipment Master*.xlsx"))
+    files = [f for f in files if not os.path.basename(f).startswith("~$")]  # skip Excel lock files
     if not files:
-        raise FileNotFoundError("no 'Equipment Master V1.*.xlsx' found in " + source_dir)
+        raise FileNotFoundError("no 'Equipment Master*.xlsx' found in " + source_dir)
+    if len(files) == 1:
+        return files[0]  # single file: use it regardless of version numbering
 
     def ver(p):
-        m = re.search(r"V1\.(\d+)", os.path.basename(p))
-        return int(m.group(1)) if m else -1
+        m = re.search(r"V(\d+)\.(\d+)", os.path.basename(p))
+        return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
 
     return max(files, key=ver)
 

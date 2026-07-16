@@ -62,3 +62,20 @@ def test_newest_source_picks_highest_version(tmp_path):
         shutil.copy(FIXTURE, src / f"Equipment Master {n}.xlsx")
     picked = newest_source(str(src))
     assert os.path.basename(picked) == "Equipment Master V1.314.xlsx"
+
+
+def test_newest_source_single_file_any_version(tmp_path):
+    src = tmp_path / "source"
+    src.mkdir()
+    shutil.copy(FIXTURE, src / "Equipment Master V2.0.xlsx")   # different major, single file
+    picked = newest_source(str(src))
+    assert os.path.basename(picked) == "Equipment Master V2.0.xlsx"
+
+
+def test_newest_source_ignores_excel_lock_files(tmp_path):
+    src = tmp_path / "source"
+    src.mkdir()
+    shutil.copy(FIXTURE, src / "Equipment Master V1.316.xlsx")
+    (src / "~$Equipment Master V1.316.xlsx").write_bytes(b"lock")
+    picked = newest_source(str(src))
+    assert os.path.basename(picked) == "Equipment Master V1.316.xlsx"
