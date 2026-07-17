@@ -1,6 +1,10 @@
 """Contract test for the Req-tracker Worker builders/parsers (Python mirror of
-worker/src/index.js: reqTitle, reqMarker, reqBody, lineStatus, lineReceived,
-parseMarker). If the JS format drifts, the expected strings here must change too.
+worker/src/index.js: reqTitle, reqMarker, lineStatus, lineDelivered,
+linePickedUp, lineHandled, parseMarker). If the JS format drifts, the expected
+strings here must change too.
+
+Model: each line captures delivered-to-site and picked-up events separately
+(no ordered quantity); `part` = 2nd Item Number shown as Part #.
 """
 import json
 import re
@@ -9,39 +13,48 @@ MARKER_RE = re.compile(r"```json\s*({[\s\S]*?})\s*```")
 
 
 def req_title(m):
-    return f'[Req {m["reqNumber"]}] {m["project"]} — {m["description"]} ({m["trade"]})'
+    proj = (" " + m["project"]) if m.get("project") else ""
+    return f'[Req {m["reqNumber"]}]{proj} ({m["trade"]})'
 
 
 def req_marker(m):
     return json.dumps({
         "type": "req", "reqNumber": m["reqNumber"], "trade": m["trade"],
-        "project": m["project"], "projectCode": m["projectCode"],
+        "project": m.get("project", ""), "projectCode": m.get("projectCode", ""),
         "shipTo": m.get("shipTo", ""), "requisitioner": m.get("requisitioner", ""),
         "date": m.get("date", ""), "description": m.get("description", ""),
         "lines": [{
-            "line": l["line"], "desc": l["desc"], "qty": l["qty"], "uom": l.get("uom", ""),
-            "requiredDate": l.get("requiredDate", ""),
-            "deliveries": [{"qty": d["qty"], "date": d["date"], "by": d.get("by", ""), "loggedBy": d.get("loggedBy", "")}
+            "line": l["line"], "part": l.get("part", ""), "desc": l["desc"],
+            "uom": l.get("uom", ""), "requiredDate": l.get("requiredDate", ""),
+            "deliveries": [{"qty": d["qty"], "date": d["date"], "loggedBy": d.get("loggedBy", "")}
                            for d in l.get("deliveries", [])],
+            "pickups": [{"qty": p["qty"], "by": p.get("by", ""), "date": p["date"], "loggedBy": p.get("loggedBy", "")}
+                        for p in l.get("pickups", [])],
         } for l in m.get("lines", [])],
     })
 
 
-def line_received(l):
+def line_delivered(l):
     return sum((d.get("qty") or 0) for d in l.get("deliveries", []))
 
 
-def line_status(qty, received):
-    try:
-        q = float(qty)
-        finite = True
-    except (TypeError, ValueError):
-        finite = False
-    if received <= 0:
+def line_picked_up(l):
+    return sum((p.get("qty") or 0) for p in l.get("pickups", []))
+
+
+def line_status(delivered, picked):
+    if delivered <= 0 and picked <= 0:
         return "Not started"
-    if not finite:
-        return "Complete"
-    return "Complete" if received >= q else "Partial"
+    if picked > 0 and picked >= delivered:
+        return "Picked up"
+    if picked > 0:
+        return "Partial pickup"
+    return "On site"
+
+
+def line_handled(l):
+    d, p = line_delivered(l), line_picked_up(l)
+    return p > 0 and p >= d
 
 
 def parse_marker(body):
@@ -50,35 +63,53 @@ def parse_marker(body):
 
 
 SAMPLE = {
-    "reqNumber": "R-0001", "trade": "Civil", "project": "High Spring",
-    "projectCode": "36620001127", "shipTo": "addr", "requisitioner": "EE # 1",
-    "date": "2026-07-16", "description": "Hydrovac",
+    "reqNumber": "244213", "trade": "Install", "project": "",
+    "projectCode": "36620001127", "date": "",
     "lines": [
-        {"line": 1, "desc": "spray foam gun", "qty": 5, "uom": "EA", "requiredDate": "2026-07-23", "deliveries": []},
-        {"line": 2, "desc": "18in zip ties heavy duty", "qty": 5000, "uom": "BX", "requiredDate": "2026-07-23",
-         "deliveries": [{"qty": 2000, "date": "2026-07-20", "by": "J. Smith", "loggedBy": "R. Ruiz"}]},
+        {"line": 1, "part": "", "desc": "Radio Antenna For vehicle", "uom": "EA",
+         "requiredDate": "2026-05-22", "deliveries": [], "pickups": []},
+        {"line": 2, "part": "756102", "desc": "Hougen hole punch 7500GPR", "uom": "EA",
+         "requiredDate": "2026-05-19",
+         "deliveries": [{"qty": 10, "date": "2026-07-20", "loggedBy": "R. Ruiz"}],
+         "pickups": [{"qty": 4, "by": "J. Smith", "date": "2026-07-21", "loggedBy": "R. Ruiz"}]},
     ],
 }
 
 
 def test_title():
-    assert req_title(SAMPLE) == "[Req R-0001] High Spring — Hydrovac (Civil)"
+    assert req_title(SAMPLE) == "[Req 244213] (Install)"
+    assert req_title({**SAMPLE, "project": "High Spring"}) == "[Req 244213] High Spring (Install)"
 
 
 def test_marker_roundtrip():
     body = "head\n\n```json\n" + req_marker(SAMPLE) + "\n```"
     d = parse_marker(body)
-    assert d["type"] == "req" and d["trade"] == "Civil"
+    assert d["type"] == "req" and d["trade"] == "Install"
     assert len(d["lines"]) == 2
+    assert d["lines"][1]["part"] == "756102"
     assert d["lines"][1]["deliveries"][0]["loggedBy"] == "R. Ruiz"
+    assert d["lines"][1]["pickups"][0]["by"] == "J. Smith"
     assert "cost" not in json.dumps(d).lower()
+    assert all("qty" not in l for l in d["lines"])   # no ordered quantity field on lines
 
 
-def test_line_status_and_received():
-    assert line_received(SAMPLE["lines"][0]) == 0
-    assert line_received(SAMPLE["lines"][1]) == 2000
-    assert line_status(5, 0) == "Not started"
-    assert line_status(5000, 2000) == "Partial"
-    assert line_status(5, 5) == "Complete"
-    assert line_status(5, 7) == "Complete"     # over-delivery still complete
-    assert line_status("", 3) == "Complete"    # non-numeric qty → any receipt completes
+def test_delivered_and_picked_up():
+    assert line_delivered(SAMPLE["lines"][0]) == 0
+    assert line_delivered(SAMPLE["lines"][1]) == 10
+    assert line_picked_up(SAMPLE["lines"][0]) == 0
+    assert line_picked_up(SAMPLE["lines"][1]) == 4
+
+
+def test_line_status():
+    assert line_status(0, 0) == "Not started"
+    assert line_status(10, 0) == "On site"
+    assert line_status(10, 4) == "Partial pickup"
+    assert line_status(10, 10) == "Picked up"
+    assert line_status(10, 12) == "Picked up"     # over-pickup still complete
+    assert line_status(0, 3) == "Picked up"       # picked up with no logged delivery
+
+
+def test_line_handled():
+    assert line_handled(SAMPLE["lines"][0]) is False
+    assert line_handled(SAMPLE["lines"][1]) is False   # delivered 10, picked 4
+    assert line_handled({"deliveries": [{"qty": 10, "date": "d"}], "pickups": [{"qty": 10, "date": "d"}]}) is True

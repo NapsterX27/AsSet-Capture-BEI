@@ -119,47 +119,56 @@ async function getRequests(url, env, h, ctx){
   return resp;
 }
 
-/* ============================ requisition delivery trackers ============================ */
-function reqTitle(m){ return `[Req ${m.reqNumber}] ${m.project} — ${m.description} (${m.trade})`; }
+/* ============================ requisition delivery trackers ============================
+ * A line captures three events over time: quantity DELIVERED to site, quantity
+ * PICKED UP by the team, and the pickup person's name. Stored as two arrays:
+ *   deliveries: [{qty,date,loggedBy}]           (to site)
+ *   pickups:    [{qty,by,date,loggedBy}]         (by team; `by` = pickup person)
+ * No ordered quantity is tracked. `part` = 2nd Item Number (shown as Part #).
+ */
+function reqTitle(m){ return `[Req ${m.reqNumber}]${m.project?(" "+m.project):""} (${m.trade})`; }
 function reqMarker(m){
   return JSON.stringify({
-    type: "req", reqNumber: m.reqNumber, trade: m.trade, project: m.project, projectCode: m.projectCode,
+    type: "req", reqNumber: m.reqNumber, trade: m.trade, project: m.project || "", projectCode: m.projectCode || "",
     shipTo: m.shipTo || "", requisitioner: m.requisitioner || "", date: m.date || "", description: m.description || "",
     lines: (m.lines || []).map(l => ({
-      line: l.line, desc: l.desc, qty: l.qty, uom: l.uom || "", requiredDate: l.requiredDate || "",
-      deliveries: (l.deliveries || []).map(d => ({ qty: d.qty, date: d.date, by: d.by, loggedBy: d.loggedBy })),
+      line: l.line, part: l.part || "", desc: l.desc, uom: l.uom || "", requiredDate: l.requiredDate || "",
+      deliveries: (l.deliveries || []).map(d => ({ qty: d.qty, date: d.date, loggedBy: d.loggedBy || "" })),
+      pickups: (l.pickups || []).map(p => ({ qty: p.qty, by: p.by || "", date: p.date, loggedBy: p.loggedBy || "" })),
     })),
   });
 }
-function lineReceived(l){ return (l.deliveries || []).reduce((s, d) => s + (Number(d.qty) || 0), 0); }
-function lineStatus(qty, received){
-  const q = Number(qty);
-  if (received <= 0) return "Not started";
-  if (!isFinite(q)) return "Complete";
-  return received >= q ? "Complete" : "Partial";
+function lineDelivered(l){ return (l.deliveries || []).reduce((s, d) => s + (Number(d.qty) || 0), 0); }
+function linePickedUp(l){ return (l.pickups || []).reduce((s, p) => s + (Number(p.qty) || 0), 0); }
+function lineStatus(delivered, picked){
+  if (delivered <= 0 && picked <= 0) return "Not started";
+  if (picked > 0 && picked >= delivered) return "Picked up";
+  if (picked > 0) return "Partial pickup";
+  return "On site";
 }
+function lineHandled(l){ const d = lineDelivered(l), p = linePickedUp(l); return p > 0 && p >= d; }
 function reqBody(m){
   const rows = (m.lines || []).map(l => {
-    const rec = lineReceived(l);
+    const d = lineDelivered(l), p = linePickedUp(l);
     const desc = String(l.desc || "").replace(/\|/g, "/");
-    return `| ${l.line} | ${desc} | ${l.qty} ${l.uom || ""} | ${rec} | ${lineStatus(l.qty, rec)} |`;
+    const part = String(l.part || "").replace(/\|/g, "/");
+    return `| ${l.line} | ${part} | ${desc} ${l.uom || ""} | ${d} | ${p} | ${lineStatus(d, p)} |`;
   }).join("\n");
   return [
     `**Requisition:** ${m.reqNumber}`, `**Trade:** ${m.trade}`,
-    `**Project:** ${m.project} (${m.projectCode})`, `**Description:** ${m.description || ""}`,
-    `**Ship to:** ${m.shipTo || ""}`, `**Requisitioner:** ${m.requisitioner || ""}`, `**Date:** ${m.date || ""}`, ``,
-    `| Line | Description | Ordered | Received | Status |`, `|---|---|---|---|---|`, rows, ``,
+    m.project ? `**Project:** ${m.project}` : null, m.date ? `**Date:** ${m.date}` : null, ``,
+    `| Line | Part # | Description | Delivered | Picked up | Status |`, `|---|---|---|---|---|---|`, rows, ``,
     "```json", reqMarker(m), "```",
-  ].join("\n");
+  ].filter(x => x !== null).join("\n");
 }
 function computeTracker(it){
   const m = parseMarker(it.body);
   if (!m || m.type !== "req") return null;
   const lines = m.lines || [];
   let complete = 0;
-  for (const l of lines){ if (lineStatus(l.qty, lineReceived(l)) === "Complete") complete++; }
+  for (const l of lines){ if (lineHandled(l)) complete++; }
   return { issue: it.number, url: it.html_url, reqNumber: m.reqNumber, trade: m.trade,
-    project: m.project, description: m.description, linesTotal: lines.length, linesComplete: complete, marker: m };
+    project: m.project || "", description: m.description || "", linesTotal: lines.length, linesComplete: complete, marker: m };
 }
 
 async function postReq(req, env, h){
@@ -170,7 +179,7 @@ async function postReq(req, env, h){
   if (!Array.isArray(b.lines) || !b.lines.length) return json({ error: "no lines" }, 400, h);
   const m = { reqNumber: b.reqNumber, trade: b.trade, project: b.project || "", projectCode: b.projectCode || "",
     shipTo: b.shipTo || "", requisitioner: b.requisitioner || "", date: b.date || "", description: b.description || "",
-    lines: b.lines.map(l => ({ line: l.line, desc: l.desc, qty: l.qty, uom: l.uom || "", requiredDate: l.requiredDate || "", deliveries: [] })) };
+    lines: b.lines.map(l => ({ line: l.line, part: l.part || "", desc: l.desc, uom: l.uom || "", requiredDate: l.requiredDate || "", deliveries: [], pickups: [] })) };
   const labels = ["req-tracker", `trade:${b.trade}`, `site:${b.projectCode || "none"}`];
   const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/issues`, {
     method: "POST", headers: { ...ghHeaders(env), "Content-Type": "application/json" },
@@ -203,7 +212,9 @@ async function postDeliver(req, env, h){
   let b; try { b = await req.json(); } catch { return json({ error: "bad json" }, 400, h); }
   const issue = parseInt(b.issue, 10);
   const qty = Number(b.qty);
+  const kind = b.kind === "pickup" ? "pickup" : "delivered";
   if (!issue || b.line == null || !isFinite(qty) || qty === 0) return json({ error: "missing fields" }, 400, h);
+  if (kind === "pickup" && !String(b.by || "").trim()) return json({ error: "pickup needs a person" }, 400, h);
   // read the issue
   const gr = await fetch(`https://api.github.com/repos/${env.GH_REPO}/issues/${issue}`, { headers: ghHeaders(env) });
   if (!gr.ok) return json({ error: "github " + gr.status }, 502, h);
@@ -212,9 +223,16 @@ async function postDeliver(req, env, h){
   if (!m || m.type !== "req") return json({ error: "not a tracker" }, 400, h);
   const line = (m.lines || []).find(l => String(l.line) === String(b.line));
   if (!line) return json({ error: "no such line" }, 400, h);
-  line.deliveries = line.deliveries || [];
-  line.deliveries.push({ qty, date: new Date().toISOString().slice(0, 10), by: String(b.by || "").trim(), loggedBy: String(b.loggedBy || "").trim() });
-  const complete = (m.lines || []).every(l => lineStatus(l.qty, lineReceived(l)) === "Complete");
+  const date = new Date().toISOString().slice(0, 10);
+  const loggedBy = String(b.loggedBy || "").trim();
+  if (kind === "pickup"){
+    line.pickups = line.pickups || [];
+    line.pickups.push({ qty, by: String(b.by || "").trim(), date, loggedBy });
+  } else {
+    line.deliveries = line.deliveries || [];
+    line.deliveries.push({ qty, date, loggedBy });
+  }
+  const complete = (m.lines || []).every(l => lineHandled(l));
   const patch = { body: reqBody(m) };
   if (complete) patch.state = "closed";
   const pr = await fetch(`https://api.github.com/repos/${env.GH_REPO}/issues/${issue}`, {
@@ -309,4 +327,4 @@ async function health(env, h){
 }
 
 // Exported for the contract test (Python port mirrors these).
-export const _internals = { buildTitle, buildMarker, buildBody, parseMarker, reqTitle, reqMarker, reqBody, lineStatus, lineReceived, CANON };
+export const _internals = { buildTitle, buildMarker, buildBody, parseMarker, reqTitle, reqMarker, reqBody, lineStatus, lineDelivered, linePickedUp, lineHandled, CANON };

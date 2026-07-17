@@ -117,7 +117,22 @@
   .trk .detail{display:none;padding:0 18px 18px;}
   .trk.open .detail{display:block;}
   .badge{display:inline-block;background:var(--bright-gray);border:1px solid var(--light-gray);color:var(--dark-blue);border-radius:999px;font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:0.04em;padding:3px 10px;white-space:nowrap;}
-  .st-none{color:var(--medium-gray);} .st-partial{color:var(--energy-blue);} .st-complete{color:var(--dark-blue);}
+  .st-none{color:var(--medium-gray);} .st-onsite{color:var(--energy-blue);} .st-partial{color:var(--energy-blue);} .st-complete{color:var(--dark-blue);}
+
+  /* New-tracker order preview */
+  .ordsum{font-size:12px;color:var(--medium-gray);font-weight:bold;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 10px;}
+  .ordrow{border:1px solid var(--light-gray);border-left:4px solid var(--light-gray);border-radius:var(--r-sm);padding:11px 14px;margin-bottom:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;}
+  .ordrow .req{font-family:'Arial Black', Arial, sans-serif;color:var(--dark-blue);font-size:14px;}
+  .ordrow .meta{font-size:12px;color:var(--medium-gray);}
+  .ordrow select{margin-left:auto;min-width:160px;width:auto;flex:0 1 auto;}
+  .ordrow.ready{border-left-color:var(--energy-blue);}
+
+  /* Per-line delivery/pickup logging */
+  .logcell .ev{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:5px;}
+  .logcell .ev:last-child{margin-bottom:0;}
+  .logcell input{padding:6px 8px;font-size:13px;}
+  .logcell .evlbl{font-size:9px;font-weight:bold;text-transform:uppercase;letter-spacing:0.04em;color:var(--medium-gray);width:52px;}
+  .pickedby{font-size:11px;color:var(--medium-gray);}
 
   .empty{padding:44px 20px;text-align:center;color:var(--medium-gray);background:var(--white);border:1px solid var(--light-gray);border-radius:var(--r);box-shadow:var(--shadow);}
   .empty .big{font-family:'Arial Black', Arial, sans-serif;text-transform:uppercase;color:var(--light-gray);font-size:18px;margin-bottom:6px;}
@@ -185,21 +200,19 @@
 
       <div class="banner" id="banner"></div>
 
-      <!-- New tracker (admin) -->
+      <!-- New trackers (admin) -->
       <div id="newPanel" class="card">
-        <div class="card-head"><h2>New delivery tracker</h2></div>
+        <div class="card-head"><h2>New delivery trackers</h2></div>
         <div class="card-body">
-          <div class="two-col">
-            <div class="field"><label>Requisition # <span style="color:var(--dark-blue)">*</span></label>
-              <input type="text" id="reqNumber" autocomplete="off" placeholder="e.g. R-12345"></div>
-            <div class="field"><label>Trade <span style="color:var(--dark-blue)">*</span></label>
-              <select id="reqTrade"></select></div>
-          </div>
-          <div class="field"><label>Req form (.xlsx) <span style="color:var(--dark-blue)">*</span></label>
+          <div class="field"><label>Req export (.xlsx) <span style="color:var(--dark-blue)">*</span></label>
             <input type="file" id="reqFile" accept=".xlsx"></div>
+          <div class="field" id="setAllWrap" style="display:none;">
+            <label>Set trade for all orders</label>
+            <select id="setAllTrade"><option value="">— choose a trade —</option></select>
+          </div>
           <div id="preview"></div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;">
-            <button class="btn" id="createBtn" disabled>Create tracker</button>
+            <button class="btn" id="createBtn" disabled>Create trackers</button>
             <button class="btn secondary" id="cancelNew">Cancel</button>
           </div>
         </div>
@@ -227,7 +240,7 @@
 const WORKER_URL = "https://asset-portal.site-asset-manager.workers.dev";
 const TRADES = ["Civil","Electrical","Foundation","Collection","Install","Mechanical",
   "Commissioning","Substation","BESS","Safety","SM/PCC","Survey","Quality","TLine","Inventory","Decom","Other"];
-const STATE = { trackers:[], state:"open", admin:false, adminName:"", pendingParse:null };
+const STATE = { trackers:[], state:"open", admin:false, adminName:"", pendingOrders:null };
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -301,18 +314,19 @@ function sheetRows(xml, shared){
   }
   return rows;
 }
-/* ---------- Which tabs the Req parser reads ----------
-   Change these two names to point the parser at different sheets.
-   Matching is trimmed + case-insensitive; a missing tab raises a clear error. */
-const REQ_CONTACT_TAB = "Contact & Delivery Information";  // header fields
-const REQ_LINES_TAB   = "JDE Import";                      // line items
-function resolveSheet(sheetPath, wanted){
-  if(sheetPath[wanted]) return sheetPath[wanted];
-  const want=wanted.trim().toLowerCase();
-  const key=Object.keys(sheetPath).find(k=>k.trim().toLowerCase()===want);
-  if(key) return sheetPath[key];
-  throw new Error('Tab "'+wanted+'" not found. Tabs in this file: '+(Object.keys(sheetPath).join(", ")||"(none)"));
+/* ---------- Req parser: one tracker per Order Number ----------
+   Reads the first sheet by EXACT header name (column order may vary).
+   Kept columns: Order Number (Req #), Line Number, Line Description,
+   2nd Item Number (Part #), UM, Request Date, Description Line 2.
+   Everything else is ignored; no ordered quantity is captured. */
+const REQ_COLS = { order:"Order Number", line:"Line Number", desc:"Line Description",
+  part:"2nd Item Number", uom:"UM", reqDate:"Request Date", desc2:"Description Line 2" };
+function firstSheetPath(wb, relMap){
+  const m=/<sheet\s+[^>]*r:id="([^"]+)"/.exec(wb);
+  if(!m) throw new Error("No sheet found in workbook");
+  let t=relMap[m[1]]||""; if(t && !t.startsWith("xl/")) t="xl/"+t; return t;
 }
+function cleanNum(v){ return String(v==null?"":v).trim().replace(/\.0+$/,""); }
 async function parseReqXlsx(file){
   const zip=readXlsxIndex(await file.arrayBuffer());
   const wb=await zip.get("xl/workbook.xml");
@@ -320,53 +334,34 @@ async function parseReqXlsx(file){
   const shared=parseShared(await zip.get("xl/sharedStrings.xml"));
   const relMap={};
   for(const m of rels.matchAll(/<Relationship\s+[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)) relMap[m[1]]=m[2];
-  const sheetPath={};
-  for(const m of wb.matchAll(/<sheet\s+[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"/g)){
-    let t=relMap[m[2]]||""; if(t && !t.startsWith("xl/")) t="xl/"+t;
-    sheetPath[decodeXml(m[1])]=t;
-  }
-  const contact=sheetRows(await zip.get(resolveSheet(sheetPath, REQ_CONTACT_TAB))||"", shared);
-  const jde=sheetRows(await zip.get(resolveSheet(sheetPath, REQ_LINES_TAB))||"", shared);
-  return { header:extractHeader(contact), lines:extractLines(jde) };
-}
-function extractHeader(rows){
-  const h={project:"",projectCode:"",shipTo:"",requisitioner:"",date:"",description:""};
-  const norm=s=>String(s||"").trim().replace(/:$/,"").toLowerCase();
-  const after=(row,i)=>{ for(let j=i+1;j<row.length;j++){ if(String(row[j]).trim()) return String(row[j]).trim(); } return ""; };
-  for(const row of rows) for(let i=0;i<row.length;i++){
-    const l=norm(row[i]);
-    if(l==="project name") h.project=after(row,i);
-    else if(l==="project #"||l==="project number"||l==="project#") h.projectCode=after(row,i);
-    else if(l==="ship to") h.shipTo=after(row,i);
-    else if(l==="requisitioner") h.requisitioner=after(row,i);
-    else if(l==="date") h.date=excelSerialToISO(after(row,i));
-    else if(l==="description") h.description=after(row,i);
-  }
-  return h;
-}
-function extractLines(rows){
-  if(!rows.length) return [];
-  const hdr=rows[0].map(x=>String(x||"").trim().toLowerCase());
-  const col=n=>hdr.indexOf(n);
-  const iLine=col("line #"), iD1=col("description 1"), iD2=col("description 2"),
-        iQty=col("quantity ordered"), iUom=col("tr. uom"), iReq=col("required date");
-  const out=[];
+  const rows=sheetRows(await zip.get(firstSheetPath(wb,relMap))||"", shared);
+  if(!rows.length) throw new Error("The sheet is empty");
+  const hdr=rows[0].map(x=>String(x||"").trim());
+  const col=name=>hdr.indexOf(name);
+  const iOrder=col(REQ_COLS.order);
+  if(iOrder<0) throw new Error('Header "'+REQ_COLS.order+'" not found. Headers: '+(hdr.filter(Boolean).join(", ")||"(none)"));
+  const iLine=col(REQ_COLS.line), iDesc=col(REQ_COLS.desc), iPart=col(REQ_COLS.part),
+        iUom=col(REQ_COLS.uom), iReq=col(REQ_COLS.reqDate), iD2=col(REQ_COLS.desc2);
+  const byOrder=new Map();
   for(let r=1;r<rows.length;r++){
     const row=rows[r];
-    const d1=iD1>=0?String(row[iD1]||"").trim():"";
+    const order=cleanNum(iOrder>=0?row[iOrder]:"");
+    if(!order) continue;
+    const d1=iDesc>=0?String(row[iDesc]||"").trim():"";
     const d2=iD2>=0?String(row[iD2]||"").trim():"";
-    const ln=iLine>=0?String(row[iLine]||"").trim():"";
-    if(!d1 && !ln) continue;
-    const qtyRaw=iQty>=0?String(row[iQty]||"").trim():"";
-    out.push({
-      line: ln? (parseInt(ln,10)||ln) : (out.length+1),
-      desc: d1 + (d2?(" "+d2):""),
-      qty: qtyRaw!==""? (Number(qtyRaw)||qtyRaw) : "",
-      uom: iUom>=0?String(row[iUom]||"").trim():"",
-      requiredDate: iReq>=0?excelSerialToISO(row[iReq]):""
-    });
+    const part=iPart>=0?String(row[iPart]||"").trim():"";
+    const lnRaw=iLine>=0?cleanNum(row[iLine]):"";
+    const line={ line: lnRaw!==""?(parseInt(lnRaw,10)||lnRaw):"", part,
+      desc:d1+(d2?(" "+d2):""), uom:iUom>=0?String(row[iUom]||"").trim():"",
+      requiredDate:iReq>=0?excelSerialToISO(row[iReq]):"" };
+    if(!line.desc && !part && line.line==="") continue;
+    if(!byOrder.has(order)) byOrder.set(order, []);
+    byOrder.get(order).push(line);
   }
-  return out;   /* NOTE: no cost/pricing field is ever produced */
+  const orders=[...byOrder.entries()].map(([reqNumber,lines])=>({reqNumber, trade:"", lines}));
+  orders.sort((a,b)=>String(a.reqNumber).localeCompare(String(b.reqNumber),undefined,{numeric:true}));
+  if(!orders.length) throw new Error("No order rows found (every row was missing an Order Number).");
+  return orders;   /* NOTE: no cost/quantity field is ever produced */
 }
 
 /* ---------- admin (real key wired in Task 4; here it unlocks the UI) ---------- */
@@ -389,20 +384,30 @@ function adminUnlock(){
   toast("Admin unlocked");
 }
 
-/* ---------- new tracker ---------- */
-function renderPreview(){
-  const p=STATE.pendingParse; const el=$("#preview");
-  if(!p){ el.innerHTML=""; $("#createBtn").disabled=true; return; }
-  const rows=p.lines.map(l=>'<tr><td>'+esc(l.line)+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.qty)+'</td><td>'+esc(l.uom)+'</td><td>'+esc(l.requiredDate)+'</td></tr>').join("");
-  el.innerHTML='<div class="field"><label>Parsed: '+esc(p.header.project)+' &middot; '+esc(p.header.description)+' &middot; '+p.lines.length+' lines</label></div>'+
-    '<div class="table-scroll"><table><thead><tr><th>Line</th><th>Description</th><th>Qty</th><th>UoM</th><th>Required</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
-  $("#createBtn").disabled = p.lines.length===0;
+/* ---------- new trackers (one per order, admin assigns a trade to each) ---------- */
+function ordTradeSelect(idx, val){
+  return '<select class="ordtrade" data-idx="'+idx+'"><option value="">Trade…</option>'+
+    TRADES.map(t=>'<option value="'+t+'"'+(t===val?' selected':'')+'>'+t+'</option>').join("")+'</select>';
 }
-function buildReqPayload(){
-  const p=STATE.pendingParse;
-  return { reqNumber:$("#reqNumber").value.trim(), trade:$("#reqTrade").value,
-    project:p.header.project, projectCode:p.header.projectCode, shipTo:p.header.shipTo,
-    requisitioner:p.header.requisitioner, date:p.header.date, description:p.header.description, lines:p.lines };
+function renderPreview(){
+  const orders=STATE.pendingOrders, el=$("#preview");
+  if(!orders){ el.innerHTML=""; $("#setAllWrap").style.display="none"; $("#createBtn").disabled=true; $("#createBtn").textContent="Create trackers"; return; }
+  $("#setAllWrap").style.display="block";
+  const totalLines=orders.reduce((s,o)=>s+o.lines.length,0);
+  const rows=orders.map((o,i)=>
+    '<div class="ordrow'+(o.trade?' ready':'')+'" data-row="'+i+'">'+
+      '<span class="req">Req '+esc(o.reqNumber)+'</span>'+
+      '<span class="meta">'+o.lines.length+' line'+(o.lines.length===1?'':'s')+'</span>'+
+      ordTradeSelect(i, o.trade)+
+    '</div>').join("");
+  el.innerHTML='<div class="ordsum">'+orders.length+' order'+(orders.length===1?'':'s')+' &middot; '+totalLines+' lines &middot; assign a trade to each order</div>'+rows;
+  updateCreateEnabled();
+}
+function updateCreateEnabled(){
+  const orders=STATE.pendingOrders||[];
+  const ready=orders.length && orders.every(o=>TRADES.includes(o.trade));
+  $("#createBtn").disabled=!ready;
+  $("#createBtn").textContent = orders.length? ("Create "+orders.length+" tracker"+(orders.length===1?"":"s")) : "Create trackers";
 }
 const wbase = () => WORKER_URL.replace(/\/$/,"");
 function adminKey(){ return localStorage.getItem("bac_admin_key")||""; }
@@ -420,16 +425,22 @@ async function loadTrackers(){
     const d=await r.json(); STATE.trackers=d.trackers||[]; banner("");
   }catch(err){ STATE.trackers=[]; banner("Offline — could not load trackers."); }
 }
-async function logDelivery(issue, line, qty, by){
+async function logEvent(issue, line, kind, qty, by){
   const r=await fetch(wbase()+"/req/deliver",{method:"POST",headers:{"Content-Type":"application/json","x-admin-key":adminKey()},
-    body:JSON.stringify({issue, line, qty:Number(qty), by, loggedBy:STATE.adminName})});
+    body:JSON.stringify({issue, line, kind, qty:Number(qty), by:by||"", loggedBy:STATE.adminName})});
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||("HTTP "+r.status)); }
   return await r.json();
 }
-function lineReceived(l){ return (l.deliveries||[]).reduce((s,d)=>s+(Number(d.qty)||0),0); }
-function lineStatus(qty, received){ const q=Number(qty); if(received<=0) return "Not started"; if(!isFinite(q)) return "Complete"; return received>=q?"Complete":"Partial"; }
-function statusClass(s){ return s==="Complete"?"st-complete":(s==="Partial"?"st-partial":"st-none"); }
-function linePct(qty, received){ const q=Number(qty); if(!isFinite(q)||q<=0) return received>0?100:0; return Math.max(0,Math.min(100,Math.round(100*received/q))); }
+function lineDelivered(l){ return (l.deliveries||[]).reduce((s,d)=>s+(Number(d.qty)||0),0); }
+function linePickedUp(l){ return (l.pickups||[]).reduce((s,p)=>s+(Number(p.qty)||0),0); }
+function lineStatus(delivered, picked){
+  if(delivered<=0 && picked<=0) return "Not started";
+  if(picked>0 && picked>=delivered) return "Picked up";
+  if(picked>0) return "Partial pickup";
+  return "On site";
+}
+function statusClass(s){ return s==="Picked up"?"st-complete":((s==="On site"||s==="Partial pickup")?"st-onsite":"st-none"); }
+function linePickPct(delivered, picked){ if(delivered<=0) return picked>0?100:0; return Math.max(0,Math.min(100,Math.round(100*picked/delivered))); }
 
 /* ---------- progress ring (chart svg) ---------- */
 function ringSvg(pct){
@@ -475,70 +486,90 @@ function render(){
 function renderTracker(t){
   const pct=t.linesTotal?Math.round(100*t.linesComplete/t.linesTotal):0;
   const rows=(t.marker.lines||[]).map(l=>{
-    const rec=lineReceived(l), st=lineStatus(l.qty,rec), lp=linePct(l.qty,rec);
-    const hist=(l.deliveries||[]).map(d=>esc(d.qty)+" · "+esc(d.date)+" · "+esc(d.by||"")+(d.loggedBy?(" ("+esc(d.loggedBy)+")"):"")).join("<br>");
-    const remaining=Math.max(0,(Number(l.qty)||0)-rec);
-    const meter='<div class="lmeter'+(st==="Complete"?" done":"")+'"><span data-w="'+lp+'"></span></div>';
+    const d=lineDelivered(l), p=linePickedUp(l), st=lineStatus(d,p), lp=linePickPct(d,p);
+    const pb=(l.pickups||[]).map(x=>esc(x.by||"")+" ("+esc(x.qty)+(x.date?(" · "+esc(x.date)):"")+")").filter(Boolean).join("<br>");
+    const meter='<div class="lmeter'+(st==="Picked up"?" done":"")+'"><span data-w="'+lp+'"></span></div>';
     const admin = STATE.admin && STATE.state==="open"
-      ? '<td class="logcell"><input class="dlqty" type="text" inputmode="decimal" style="width:60px" placeholder="'+esc(remaining)+'"><input class="dlby" type="text" style="width:100px" placeholder="picked up by"><button class="btn small" data-deliver="'+t.issue+'|'+esc(l.line)+'">Log</button></td>'
+      ? '<td class="logcell">'+
+          '<div class="ev"><span class="evlbl">Deliver</span><input class="dqty" type="text" inputmode="decimal" style="width:64px" placeholder="qty"><button class="btn small" data-ev="delivered|'+t.issue+'|'+esc(l.line)+'">Log</button></div>'+
+          '<div class="ev"><span class="evlbl">Pickup</span><input class="pqty" type="text" inputmode="decimal" style="width:64px" placeholder="qty"><input class="pby" type="text" style="width:110px" placeholder="picked up by"><button class="btn small" data-ev="pickup|'+t.issue+'|'+esc(l.line)+'">Log</button></div>'+
+        '</td>'
       : '';
-    return '<tr><td>'+esc(l.line)+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.uom)+'</td><td>'+esc(l.qty)+'</td><td>'+esc(rec)+meter+'</td><td class="'+statusClass(st)+'">'+st+'</td><td class="meta">'+hist+'</td>'+admin+'</tr>';
+    return '<tr><td>'+esc(l.line)+'</td><td>'+esc(l.part||"")+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.uom)+'</td><td>'+esc(d)+'</td><td>'+esc(p)+meter+'</td><td class="meta pickedby">'+pb+'</td><td class="'+statusClass(st)+'">'+st+'</td>'+admin+'</tr>';
   }).join("");
-  const adminHead = STATE.admin && STATE.state==="open" ? '<th>Log delivery</th>' : '';
+  const adminHead = STATE.admin && STATE.state==="open" ? '<th>Log delivery / pickup</th>' : '';
   return '<div class="trk" data-issue="'+t.issue+'">'+
-    '<div class="top" data-toggle="'+t.issue+'"><span class="req">'+esc(t.reqNumber)+'</span> <span class="badge">'+esc(t.trade)+'</span> '+
-      '<span class="meta">'+esc(t.project)+(t.description?(" · "+esc(t.description)):"")+'</span>'+
-      '<span class="prog"><span class="lines">'+t.linesComplete+'/'+t.linesTotal+' lines</span>'+ringSvg(pct)+'</span></div>'+
-    '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Description</th><th>UoM</th><th>Ordered</th><th>Received</th><th>Status</th><th>Deliveries</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="top" data-toggle="'+t.issue+'"><span class="req">Req '+esc(t.reqNumber)+'</span> <span class="badge">'+esc(t.trade)+'</span> '+
+      (t.project?'<span class="meta">'+esc(t.project)+'</span>':'')+
+      '<span class="prog"><span class="lines">'+t.linesComplete+'/'+t.linesTotal+' picked up</span>'+ringSvg(pct)+'</span></div>'+
+    '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Delivered</th><th>Picked up</th><th>Picked up by</th><th>Status</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
       '<div style="margin-top:8px"><a class="btn small secondary" href="'+esc(t.url)+'" target="_blank" rel="noopener">Open issue</a></div></div></div>';
 }
 
 /* ---------- boot ---------- */
-function initTrades(){ const s=$("#reqTrade"), f=$("#fTrade");
-  TRADES.forEach(t=>{ const o=document.createElement("option");o.value=t;o.textContent=t;s.appendChild(o);
-    const o2=document.createElement("option");o2.value=t;o2.textContent=t;f.appendChild(o2); }); }
+function initTrades(){ const f=$("#fTrade"), sa=$("#setAllTrade");
+  TRADES.forEach(t=>{ const o=document.createElement("option");o.value=t;o.textContent=t;f.appendChild(o);
+    const o2=document.createElement("option");o2.value=t;o2.textContent=t;sa.appendChild(o2); }); }
+function resetNewPanel(){ STATE.pendingOrders=null; $("#reqFile").value=""; $("#setAllTrade").value=""; renderPreview(); }
 function bind(){
   $("#adminBtn").addEventListener("click", adminUnlock);
   $("#newBtn").addEventListener("click", ()=>{ $("#newPanel").classList.add("show"); });
-  $("#cancelNew").addEventListener("click", ()=>{ $("#newPanel").classList.remove("show"); STATE.pendingParse=null; $("#reqFile").value=""; renderPreview(); });
+  $("#cancelNew").addEventListener("click", ()=>{ $("#newPanel").classList.remove("show"); resetNewPanel(); });
   $("#reqFile").addEventListener("change", async e=>{
     const f=e.target.files[0]; if(!f) return;
-    try{ toast("Reading file…"); STATE.pendingParse=await parseReqXlsx(f); renderPreview(); toast("Parsed "+STATE.pendingParse.lines.length+" lines"); }
-    catch(err){ STATE.pendingParse=null; renderPreview(); banner("Could not read file: "+err.message); }
+    try{ toast("Reading file…"); STATE.pendingOrders=await parseReqXlsx(f); renderPreview();
+      toast("Parsed "+STATE.pendingOrders.length+" order"+(STATE.pendingOrders.length===1?"":"s")); }
+    catch(err){ STATE.pendingOrders=null; renderPreview(); banner("Could not read file: "+err.message); }
+  });
+  $("#setAllTrade").addEventListener("change", e=>{
+    const v=e.target.value; if(!v||!STATE.pendingOrders) return;
+    STATE.pendingOrders.forEach(o=>o.trade=v); renderPreview();
+  });
+  $("#preview").addEventListener("change", e=>{
+    const sel=e.target.closest(".ordtrade"); if(!sel||!STATE.pendingOrders) return;
+    const i=Number(sel.getAttribute("data-idx")); STATE.pendingOrders[i].trade=sel.value;
+    const row=sel.closest(".ordrow"); if(row) row.classList.toggle("ready", TRADES.includes(sel.value));
+    updateCreateEnabled();
   });
   $("#createBtn").addEventListener("click", async ()=>{
-    const p=buildReqPayload();
-    if(!p.reqNumber){ toast("Enter a Req #"); return; }
-    if(!TRADES.includes(p.trade)){ toast("Pick a trade"); return; }
-    if(!p.lines.length){ toast("No lines parsed"); return; }
-    toast("Creating…");
-    const res=await createTracker(p);
-    if(res.ok){
-      toast("Tracker created for "+p.reqNumber);
-      $("#newPanel").classList.remove("show"); STATE.pendingParse=null; $("#reqFile").value=""; renderPreview();
-      STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false");
-      if(res.tracker){ STATE.trackers.unshift(res.tracker); }  // show immediately (GET is cached ~60s)
-      render();
-    } else toast("Create failed: "+(res.error||""));
+    const orders=STATE.pendingOrders||[];
+    if(!orders.length){ toast("Upload a file first"); return; }
+    if(!orders.every(o=>TRADES.includes(o.trade))){ toast("Assign a trade to every order"); return; }
+    $("#createBtn").disabled=true;
+    let ok=0, fail=0; const created=[];
+    for(let i=0;i<orders.length;i++){
+      const o=orders[i]; toast("Creating "+(i+1)+"/"+orders.length+"…");
+      const res=await createTracker({ reqNumber:o.reqNumber, trade:o.trade, lines:o.lines });
+      if(res.ok){ ok++; if(res.tracker) created.push(res.tracker); } else fail++;
+    }
+    STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false");
+    created.reverse().forEach(tr=>STATE.trackers.unshift(tr));
+    $("#newPanel").classList.remove("show"); resetNewPanel(); render();
+    toast("Created "+ok+" tracker"+(ok===1?"":"s")+(fail?(" · "+fail+" failed"):""));
   });
   $("#q").addEventListener("input", render);
   $("#fTrade").addEventListener("change", render);
   $("#segActive").addEventListener("click", async ()=>{ STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false"); await loadTrackers(); render(); });
   $("#segDone").addEventListener("click", async ()=>{ STATE.state="closed"; $("#segDone").setAttribute("aria-selected","true"); $("#segActive").setAttribute("aria-selected","false"); await loadTrackers(); render(); });
   $("#list").addEventListener("click", async e=>{
-    const del=e.target.closest("[data-deliver]");
-    if(del){
-      const [issue,line]=del.getAttribute("data-deliver").split("|");
-      const row=del.closest("tr"), qtyEl=row.querySelector(".dlqty"), byEl=row.querySelector(".dlby");
-      let qty=qtyEl.value.trim() || qtyEl.getAttribute("placeholder");
-      if(!qty || Number(qty)===0){ toast("Enter a quantity"); return; }
-      const by=byEl.value.trim(); if(!by){ toast("Enter picked-up-by"); return; }
+    const ev=e.target.closest("[data-ev]");
+    if(ev){
+      const [kind,issue,line]=ev.getAttribute("data-ev").split("|");
+      const row=ev.closest("tr"); let qty, by="";
+      if(kind==="pickup"){
+        qty=row.querySelector(".pqty").value.trim(); by=row.querySelector(".pby").value.trim();
+        if(!qty||Number(qty)===0){ toast("Enter a pickup quantity"); return; }
+        if(!by){ toast("Enter who picked it up"); return; }
+      } else {
+        qty=row.querySelector(".dqty").value.trim();
+        if(!qty||Number(qty)===0){ toast("Enter a delivered quantity"); return; }
+      }
       try{
         toast("Logging…");
-        const res=await logDelivery(parseInt(issue,10), line, qty, by);
+        const res=await logEvent(parseInt(issue,10), line, kind, qty, by);
         const idx=STATE.trackers.findIndex(t=>t.issue===parseInt(issue,10));
-        if(res.complete){ if(idx>=0) STATE.trackers.splice(idx,1); toast("Line logged — tracker complete"); render(); }
-        else { if(idx>=0 && res.tracker) STATE.trackers[idx]=res.tracker; toast("Delivery logged"); render();
+        if(res.complete){ if(idx>=0) STATE.trackers.splice(idx,1); toast("Logged — tracker complete"); render(); }
+        else { if(idx>=0 && res.tracker) STATE.trackers[idx]=res.tracker; toast(kind==="pickup"?"Pickup logged":"Delivery logged"); render();
           const card=document.querySelector('.trk[data-issue="'+issue+'"]'); if(card) card.classList.add("open"); }
       }catch(err){ toast("Failed: "+err.message); }
       return;
