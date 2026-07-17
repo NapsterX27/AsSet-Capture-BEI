@@ -26,6 +26,7 @@ wrangler secret put GH_TOKEN        # paste the fine-grained token
 wrangler secret put GH_REPO         # NapsterX27/AsSet-Capture-BEI
 wrangler secret put SUBMIT_KEY      # any random string (e.g. from a password gen)
 wrangler secret put ALLOWED_ORIGIN  # https://napsterx27.github.io
+wrangler secret put ADMIN_KEY       # SEPARATE strong random string — gates delivery-tracker writes (/req, /req/deliver); share only with your one collaborator, rotate to revoke
 ```
 Dashboard alternative: **Workers & Pages → Create Worker**, paste `src/index.js`,
 then **Settings → Variables** add the four values (mark `GH_TOKEN`/`SUBMIT_KEY`

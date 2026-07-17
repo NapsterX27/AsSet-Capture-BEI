@@ -327,20 +327,69 @@ function buildReqPayload(){
     project:p.header.project, projectCode:p.header.projectCode, shipTo:p.header.shipTo,
     requisitioner:p.header.requisitioner, date:p.header.date, description:p.header.description, lines:p.lines };
 }
-/* STUB: Task 3 replaces with POST /req */
-async function createTracker(payload){ return {ok:true, issueNumber:0, url:"#(stub)"}; }
+const wbase = () => WORKER_URL.replace(/\/$/,"");
+function adminKey(){ return localStorage.getItem("bac_admin_key")||""; }
+async function createTracker(payload){
+  try{
+    const r=await fetch(wbase()+"/req",{method:"POST",headers:{"Content-Type":"application/json","x-admin-key":adminKey()},body:JSON.stringify(payload)});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); return {ok:false,error:e.error||("HTTP "+r.status)}; }
+    return await r.json();
+  }catch(err){ return {ok:false,error:err.message}; }
+}
+async function loadTrackers(){
+  try{
+    const r=await fetch(wbase()+"/reqs?state="+STATE.state);
+    if(!r.ok){ STATE.trackers=[]; banner("Could not load trackers (HTTP "+r.status+")"); return; }
+    const d=await r.json(); STATE.trackers=d.trackers||[]; banner("");
+  }catch(err){ STATE.trackers=[]; banner("Offline — could not load trackers."); }
+}
+async function logDelivery(issue, line, qty, by){
+  const r=await fetch(wbase()+"/req/deliver",{method:"POST",headers:{"Content-Type":"application/json","x-admin-key":adminKey()},
+    body:JSON.stringify({issue, line, qty:Number(qty), by, loggedBy:STATE.adminName})});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||("HTTP "+r.status)); }
+  return await r.json();
+}
+function lineReceived(l){ return (l.deliveries||[]).reduce((s,d)=>s+(Number(d.qty)||0),0); }
+function lineStatus(qty, received){ const q=Number(qty); if(received<=0) return "Not started"; if(!isFinite(q)) return "Complete"; return received>=q?"Complete":"Partial"; }
+function statusClass(s){ return s==="Complete"?"st-complete":(s==="Partial"?"st-partial":"st-none"); }
 
-/* ---------- render trackers (list filled by GET in Task 3) ---------- */
+/* ---------- render trackers ---------- */
+function viewTrackers(){
+  const q=$("#q").value.trim().toLowerCase(), tf=$("#fTrade").value;
+  let v=STATE.trackers.slice();
+  if(tf) v=v.filter(t=>t.trade===tf);
+  if(q) v=v.filter(t=>[t.reqNumber,t.project,t.description,t.trade].some(x=>String(x||"").toLowerCase().includes(q)));
+  return v;
+}
 function render(){
-  const list=$("#list"), empty=$("#empty");
+  const list=$("#list"), empty=$("#empty"), v=viewTrackers();
   if(!STATE.trackers.length){
-    list.innerHTML="";
-    empty.style.display="block";
-    empty.innerHTML='<div class="big">No trackers yet</div><div>'+(STATE.admin?"Use “New tracker” to add one.":"Unlock admin to create a tracker, or check back for updates.")+'</div>';
+    list.innerHTML=""; empty.style.display="block";
+    empty.innerHTML='<div class="big">No '+(STATE.state==="open"?"active":"completed")+' trackers</div><div>'+(STATE.admin?"Use “New tracker” to add one.":"Nothing here yet.")+'</div>';
     return;
   }
+  if(!v.length){ list.innerHTML=""; empty.style.display="block"; empty.innerHTML='<div class="big">No matches</div><div>Adjust search or trade filter.</div>'; return; }
   empty.style.display="none";
-  list.innerHTML="(tracker list wired in Task 3)";
+  list.innerHTML=v.map(renderTracker).join("");
+}
+function renderTracker(t){
+  const pct=t.linesTotal?Math.round(100*t.linesComplete/t.linesTotal):0;
+  const rows=(t.marker.lines||[]).map(l=>{
+    const rec=lineReceived(l), st=lineStatus(l.qty,rec);
+    const hist=(l.deliveries||[]).map(d=>esc(d.qty)+" · "+esc(d.date)+" · "+esc(d.by||"")+(d.loggedBy?(" ("+esc(d.loggedBy)+")"):"")).join("<br>");
+    const remaining=Math.max(0,(Number(l.qty)||0)-rec);
+    const admin = STATE.admin && STATE.state==="open"
+      ? '<td class="logcell"><input class="dlqty" type="text" inputmode="decimal" style="width:60px" placeholder="'+esc(remaining)+'"><input class="dlby" type="text" style="width:100px" placeholder="picked up by"><button class="btn small" data-deliver="'+t.issue+'|'+esc(l.line)+'">Log</button></td>'
+      : '';
+    return '<tr><td>'+esc(l.line)+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.uom)+'</td><td>'+esc(l.qty)+'</td><td>'+esc(rec)+'</td><td class="'+statusClass(st)+'">'+st+'</td><td class="meta">'+hist+'</td>'+admin+'</tr>';
+  }).join("");
+  const adminHead = STATE.admin && STATE.state==="open" ? '<th>Log delivery</th>' : '';
+  return '<div class="trk" data-issue="'+t.issue+'">'+
+    '<div class="top" data-toggle="'+t.issue+'"><span class="req">'+esc(t.reqNumber)+'</span> <span class="badge">'+esc(t.trade)+'</span> '+
+      '<span class="meta">'+esc(t.project)+(t.description?(" · "+esc(t.description)):"")+'</span>'+
+      '<span class="prog">'+t.linesComplete+'/'+t.linesTotal+' lines · '+pct+'%</span></div>'+
+    '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Description</th><th>UoM</th><th>Ordered</th><th>Received</th><th>Status</th><th>Deliveries</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
+      '<div style="margin-top:8px"><a class="btn small secondary" href="'+esc(t.url)+'" target="_blank" rel="noopener">Open issue</a></div></div></div>';
 }
 
 /* ---------- boot ---------- */
@@ -361,18 +410,45 @@ function bind(){
     if(!p.reqNumber){ toast("Enter a Req #"); return; }
     if(!TRADES.includes(p.trade)){ toast("Pick a trade"); return; }
     if(!p.lines.length){ toast("No lines parsed"); return; }
+    toast("Creating…");
     const res=await createTracker(p);
-    toast(res.ok?("Tracker created for "+p.reqNumber):"Create failed");
-    $("#newPanel").classList.remove("show"); STATE.pendingParse=null; $("#reqFile").value=""; renderPreview();
+    if(res.ok){
+      toast("Tracker created for "+p.reqNumber);
+      $("#newPanel").classList.remove("show"); STATE.pendingParse=null; $("#reqFile").value=""; renderPreview();
+      STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false");
+      await loadTrackers(); render();
+    } else toast("Create failed: "+(res.error||""));
   });
   $("#q").addEventListener("input", render);
   $("#fTrade").addEventListener("change", render);
-  $("#segActive").addEventListener("click", ()=>{ STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false"); render(); });
-  $("#segDone").addEventListener("click", ()=>{ STATE.state="closed"; $("#segDone").setAttribute("aria-selected","true"); $("#segActive").setAttribute("aria-selected","false"); render(); });
+  $("#segActive").addEventListener("click", async ()=>{ STATE.state="open"; $("#segActive").setAttribute("aria-selected","true"); $("#segDone").setAttribute("aria-selected","false"); await loadTrackers(); render(); });
+  $("#segDone").addEventListener("click", async ()=>{ STATE.state="closed"; $("#segDone").setAttribute("aria-selected","true"); $("#segActive").setAttribute("aria-selected","false"); await loadTrackers(); render(); });
+  $("#list").addEventListener("click", async e=>{
+    const del=e.target.closest("[data-deliver]");
+    if(del){
+      const [issue,line]=del.getAttribute("data-deliver").split("|");
+      const row=del.closest("tr"), qtyEl=row.querySelector(".dlqty"), byEl=row.querySelector(".dlby");
+      let qty=qtyEl.value.trim() || qtyEl.getAttribute("placeholder");
+      if(!qty || Number(qty)===0){ toast("Enter a quantity"); return; }
+      const by=byEl.value.trim(); if(!by){ toast("Enter picked-up-by"); return; }
+      try{
+        toast("Logging…");
+        const res=await logDelivery(parseInt(issue,10), line, qty, by);
+        const idx=STATE.trackers.findIndex(t=>t.issue===parseInt(issue,10));
+        if(res.complete){ if(idx>=0) STATE.trackers.splice(idx,1); toast("Line logged — tracker complete"); render(); }
+        else { if(idx>=0 && res.tracker) STATE.trackers[idx]=res.tracker; toast("Delivery logged"); render();
+          const card=document.querySelector('.trk[data-issue="'+issue+'"]'); if(card) card.classList.add("open"); }
+      }catch(err){ toast("Failed: "+err.message); }
+      return;
+    }
+    const tog=e.target.closest("[data-toggle]");
+    if(tog){ tog.closest(".trk").classList.toggle("open"); }
+  });
 }
-function init(){
+async function init(){
   initTrades(); bind();
   STATE.adminName=localStorage.getItem("bac_admin_name")||"";
+  await loadTrackers();
   render();
 }
 init();
