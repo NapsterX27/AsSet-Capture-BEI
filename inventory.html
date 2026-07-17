@@ -857,7 +857,7 @@ function bind(){
 async function init(){
   fillTradeControls(); bind();
   STATE.adminName = localStorage.getItem("bac_admin_name") || "";
-  setAdmin(!!adminKey());   // restore admin controls if this device has unlocked before
+  setAdmin(false);   // start locked each session — admin clicks "Admin" to log in (matches Deliveries)
   STATE.meta = await loadMeta();
   if(STATE.meta && STATE.meta.builtAt){ const el=$("#asof"); el.innerHTML = fmtUpdated(STATE.meta.builtAt); el.classList.add("show"); }
   STATE.siteIndex = await loadSiteIndex();
