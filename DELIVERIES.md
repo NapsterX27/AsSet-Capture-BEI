@@ -47,15 +47,18 @@ Live at the **Deliveries** card on the portal hub → `deliveries.html`.
 ## Log deliveries & pickups (updater)
 Each line captures two events, which happen at different times:
 1. Click a tracker to expand its lines.
-2. **Deliver** — when material arrives on site, enter the **quantity delivered**
+2. **Expected qty (admin, optional)** — the Req export often omits the expected
+   quantity, so enter it manually on the *Expected* row and click **Set**. The
+   line then shows **Pending = Expected − Delivered** (0 when fully delivered).
+3. **Deliver** — when material arrives on site, enter the **quantity delivered**
    and click **Log** on the *Deliver* row.
-3. **Pickup** — when the team takes material, enter the **quantity picked up** and
+4. **Pickup** — when the team takes material, enter the **quantity picked up** and
    the **pickup person's name**, then **Log** on the *Pickup* row.
-4. Log as many of each as needed. Line status moves **Not started → On site →
+5. Log as many of each as needed. Line status moves **Not started → On site →
    Partial pickup → Picked up**. When **every line is fully picked up**, the
    tracker **auto-closes** to the **Completed** tab. Date + your name are recorded
    automatically on each event.
-5. **Mark complete (admin):** when the Req export doesn't include every already-
+6. **Mark complete (admin):** when the Req export doesn't include every already-
    handled line, the order won't auto-close. Click **Mark complete** on the order
    header to close it manually — it moves to **Completed** (shown with a green
    accent and a "Completed" badge). The GitHub Issue is closed as `completed`.
@@ -67,8 +70,8 @@ Each line captures two events, which happen at different times:
   filter by **Trade**, **Originator** (the Req's *Transaction Originator*, shown
   as "By NAME"), and **Date** — a one-click **Today** or an exact **From / To**
   required-date range — then **Clear filters** to reset. Expand any tracker to see, per line: Part #,
-  description, **Required** date, **Delivered**, **Picked up**, **Picked up by**,
-  and status.
+  description, **Required** date, **Expected**, **Delivered**, **Pending**
+  (Expected − Delivered), **Picked up**, **Picked up by**, and status.
 - **Change a trade (admin):** each tracker header has a **Trade** dropdown — pick
   a new trade to reassign it after creation (updates instantly).
 - **Overdue flags:** a line whose **Required** date has passed with nothing on

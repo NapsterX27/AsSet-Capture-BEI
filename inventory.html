@@ -177,9 +177,9 @@
   .req-item .top{font-weight:bold;color:var(--dark-blue);font-size:13px;}
   .req-item .meta{font-size:11px;color:var(--medium-gray);margin-top:3px;}
 
-  .pending-badge{display:inline-block;background:var(--dark-blue);color:var(--white);font-size:10px;font-weight:bold;
-    text-transform:uppercase;letter-spacing:0.04em;padding:4px 8px;border-radius:999px;text-decoration:none;white-space:nowrap;}
-  .pending-badge:hover{background:var(--energy-blue);}
+  .pending-badge{display:inline-flex;align-items:center;gap:5px;background:var(--dark-blue);color:var(--white);font-size:10px;font-weight:bold;
+    text-transform:uppercase;letter-spacing:0.04em;padding:4px 9px;border-radius:999px;white-space:nowrap;cursor:default;}
+  .pending-badge::before{content:"";box-sizing:border-box;width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px;}
   .row-actions{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;white-space:nowrap;}
   .row-actions .btn{flex:0 0 auto;}
   .dup-block{display:none;background:var(--light-blue);border:1px solid var(--energy-blue);border-radius:var(--r-sm);color:var(--dark-blue);
@@ -510,7 +510,7 @@ function renderInventory(){
   shown.forEach((a,i)=>{
     const tr=document.createElement("tr"); tr.className="asset-row";
     const pend=(OPEN_REQ[rkey(a.unit,a.serial)]||[]);
-    const pendBadge = pend.length ? '<a class="pending-badge" href="'+esc(pend[0].url)+'" target="_blank" rel="noopener">Pending #'+esc(pend[0].issue)+'</a> ' : '';
+    const pendBadge = pend.length ? '<span class="pending-badge" title="A change request is open for this asset">Pending</span> ' : '';
     tr.innerHTML=
       '<td class="selcol"><input type="checkbox" class="rowsel" data-unit="'+esc(a.unit)+'" data-serial="'+esc(a.serial)+'"'+(STATE.selected.has(rkey(a.unit,a.serial))?' checked':'')+'></td>'+
       '<td class="id">'+esc(a.unit)+'</td>'+
@@ -609,8 +609,7 @@ function checkDup(){
   const t=$("#reqType").value;
   const dup=(OPEN_REQ[rkey(a.unit,a.serial)]||[]).find(q=>q.type===t);
   if(dup){
-    block.innerHTML = 'A '+(t==="reassign"?"reassignment":"report")+' request is already open for this unit '+
-      '(<a href="'+esc(dup.url)+'" target="_blank" rel="noopener">#'+esc(dup.issue)+'</a>). No need to submit another.';
+    block.innerHTML = 'A '+(t==="reassign"?"reassignment":"report")+' request is already open for this unit. No need to submit another.';
     block.classList.add("show"); btn.disabled=true;
   } else {
     block.classList.remove("show"); btn.disabled=false;
