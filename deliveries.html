@@ -604,7 +604,7 @@ function renderTracker(t){
       (t.project?'<span class="meta">'+esc(t.project)+'</span>':'')+
       '<span class="prog"><span class="lines">'+t.linesComplete+'/'+t.linesTotal+' picked up</span>'+ringSvg(pct)+'</span></div>'+
     '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Required</th><th>Delivered</th><th>Picked up</th><th>Picked up by</th><th>Status</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
-      '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;"><a class="btn small secondary" href="'+esc(t.url)+'" target="_blank" rel="noopener">Open issue</a>'+
+      '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">'+
       '<button class="btn small secondary" data-print="'+t.issue+'">Print sheet</button>'+
       (STATE.admin?'<button class="btn small secondary" data-delete="'+t.issue+'">Delete order</button>':'')+
       '</div></div></div>';
