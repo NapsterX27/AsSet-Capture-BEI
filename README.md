@@ -22,6 +22,7 @@ change requests — which become auto-reconciling GitHub Issues.
 | Path | Purpose |
 |------|---------|
 | `index.html` | The portal SPA |
+| `guide.html` | Interactive in-app guide (Admin + End-user tracks) |
 | `data/` | Generated per-site JSON + `sites.json` index + `meta.json` |
 | `build/` | Python xlsx→JSON build + tests (stdlib only) |
 | `.github/workflows/build-data.yml` | Daily build + reconcile Action |
