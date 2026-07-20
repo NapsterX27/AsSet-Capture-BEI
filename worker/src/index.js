@@ -143,6 +143,7 @@ function reqMarker(m){
     shipTo: m.shipTo || "", requisitioner: m.requisitioner || "", date: m.date || "", description: m.description || "",
     lines: (m.lines || []).map(l => ({
       line: l.line, part: l.part || "", desc: l.desc, uom: l.uom || "", requiredDate: l.requiredDate || "",
+      expected: (l.expected == null || l.expected === "") ? null : Number(l.expected),
       deliveries: (l.deliveries || []).map(d => ({ qty: d.qty, date: d.date, loggedBy: d.loggedBy || "" })),
       pickups: (l.pickups || []).map(p => ({ qty: p.qty, by: p.by || "", date: p.date, loggedBy: p.loggedBy || "" })),
     })),
@@ -157,17 +158,19 @@ function lineStatus(delivered, picked){
   return "On site";
 }
 function lineHandled(l){ const d = lineDelivered(l), p = linePickedUp(l); return p > 0 && p >= d; }
+function lineExpected(l){ return (l && l.expected != null && l.expected !== "") ? Number(l.expected) : null; }
+function linePending(l){ const e = lineExpected(l); return e == null ? null : Math.max(0, e - lineDelivered(l)); }
 function reqBody(m){
   const rows = (m.lines || []).map(l => {
-    const d = lineDelivered(l), p = linePickedUp(l);
+    const d = lineDelivered(l), p = linePickedUp(l), e = lineExpected(l), pend = linePending(l);
     const desc = String(l.desc || "").replace(/\|/g, "/");
     const part = String(l.part || "").replace(/\|/g, "/");
-    return `| ${l.line} | ${part} | ${desc} ${l.uom || ""} | ${d} | ${p} | ${lineStatus(d, p)} |`;
+    return `| ${l.line} | ${part} | ${desc} ${l.uom || ""} | ${e == null ? "" : e} | ${d} | ${pend == null ? "" : pend} | ${p} | ${lineStatus(d, p)} |`;
   }).join("\n");
   return [
     `**Requisition:** ${m.reqNumber}`, `**Trade:** ${m.trade}`,
     m.project ? `**Project:** ${m.project}` : null, m.date ? `**Date:** ${m.date}` : null, ``,
-    `| Line | Part # | Description | Delivered | Picked up | Status |`, `|---|---|---|---|---|---|`, rows, ``,
+    `| Line | Part # | Description | Expected | Delivered | Pending | Picked up | Status |`, `|---|---|---|---|---|---|---|---|`, rows, ``,
     "```json", reqMarker(m), "```",
   ].filter(x => x !== null).join("\n");
 }
@@ -189,7 +192,7 @@ async function postReq(req, env, h){
   if (!Array.isArray(b.lines) || !b.lines.length) return json({ error: "no lines" }, 400, h);
   const m = { reqNumber: b.reqNumber, trade: b.trade, project: b.project || "", projectCode: b.projectCode || "",
     shipTo: b.shipTo || "", requisitioner: b.requisitioner || "", date: b.date || "", description: b.description || "",
-    lines: b.lines.map(l => ({ line: l.line, part: l.part || "", desc: l.desc, uom: l.uom || "", requiredDate: l.requiredDate || "", deliveries: [], pickups: [] })) };
+    lines: b.lines.map(l => ({ line: l.line, part: l.part || "", desc: l.desc, uom: l.uom || "", requiredDate: l.requiredDate || "", expected: (l.expected == null || l.expected === "") ? null : Number(l.expected), deliveries: [], pickups: [] })) };
   const labels = ["req-tracker", `trade:${b.trade}`, `site:${b.projectCode || "none"}`];
   const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/issues`, {
     method: "POST", headers: { ...ghHeaders(env), "Content-Type": "application/json" },
@@ -222,8 +225,10 @@ async function postDeliver(req, env, h){
   let b; try { b = await req.json(); } catch { return json({ error: "bad json" }, 400, h); }
   const issue = parseInt(b.issue, 10);
   const qty = Number(b.qty);
-  const kind = b.kind === "pickup" ? "pickup" : "delivered";
-  if (!issue || b.line == null || !isFinite(qty) || qty === 0) return json({ error: "missing fields" }, 400, h);
+  const kind = b.kind === "pickup" ? "pickup" : (b.kind === "expected" ? "expected" : "delivered");
+  if (!issue || b.line == null || !isFinite(qty)) return json({ error: "missing fields" }, 400, h);
+  if (kind !== "expected" && qty === 0) return json({ error: "missing fields" }, 400, h);
+  if (kind === "expected" && qty < 0) return json({ error: "bad qty" }, 400, h);
   if (kind === "pickup" && !String(b.by || "").trim()) return json({ error: "pickup needs a person" }, 400, h);
   // read the issue
   const gr = await fetch(`https://api.github.com/repos/${env.GH_REPO}/issues/${issue}`, { headers: ghHeaders(env) });
@@ -238,6 +243,8 @@ async function postDeliver(req, env, h){
   if (kind === "pickup"){
     line.pickups = line.pickups || [];
     line.pickups.push({ qty, by: String(b.by || "").trim(), date, loggedBy });
+  } else if (kind === "expected"){
+    line.expected = qty;   // manual expected qty (absolute; export often omits it)
   } else {
     line.deliveries = line.deliveries || [];
     line.deliveries.push({ qty, date, loggedBy });

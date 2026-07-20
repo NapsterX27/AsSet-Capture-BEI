@@ -26,6 +26,7 @@ def req_marker(m):
         "lines": [{
             "line": l["line"], "part": l.get("part", ""), "desc": l["desc"],
             "uom": l.get("uom", ""), "requiredDate": l.get("requiredDate", ""),
+            "expected": (None if l.get("expected") in (None, "") else float(l["expected"])),
             "deliveries": [{"qty": d["qty"], "date": d["date"], "loggedBy": d.get("loggedBy", "")}
                            for d in l.get("deliveries", [])],
             "pickups": [{"qty": p["qty"], "by": p.get("by", ""), "date": p["date"], "loggedBy": p.get("loggedBy", "")}
@@ -40,6 +41,16 @@ def line_delivered(l):
 
 def line_picked_up(l):
     return sum((p.get("qty") or 0) for p in l.get("pickups", []))
+
+
+def line_expected(l):
+    e = l.get("expected")
+    return None if e in (None, "") else float(e)
+
+
+def line_pending(l):
+    e = line_expected(l)
+    return None if e is None else max(0, e - line_delivered(l))
 
 
 def line_status(delivered, picked):
@@ -69,7 +80,7 @@ SAMPLE = {
         {"line": 1, "part": "", "desc": "Radio Antenna For vehicle", "uom": "EA",
          "requiredDate": "2026-05-22", "deliveries": [], "pickups": []},
         {"line": 2, "part": "756102", "desc": "Hougen hole punch 7500GPR", "uom": "EA",
-         "requiredDate": "2026-05-19",
+         "requiredDate": "2026-05-19", "expected": 12,
          "deliveries": [{"qty": 10, "date": "2026-07-20", "loggedBy": "R. Ruiz"}],
          "pickups": [{"qty": 4, "by": "J. Smith", "date": "2026-07-21", "loggedBy": "R. Ruiz"}]},
     ],
@@ -91,6 +102,16 @@ def test_marker_roundtrip():
     assert d["lines"][1]["pickups"][0]["by"] == "J. Smith"
     assert "cost" not in json.dumps(d).lower()
     assert all("qty" not in l for l in d["lines"])   # no ordered quantity field on lines
+    assert d["lines"][0]["expected"] is None         # unset when the export omits it
+    assert d["lines"][1]["expected"] == 12
+
+
+def test_expected_and_pending():
+    assert line_expected(SAMPLE["lines"][0]) is None
+    assert line_pending(SAMPLE["lines"][0]) is None            # no expected -> no pending
+    assert line_expected(SAMPLE["lines"][1]) == 12
+    assert line_pending(SAMPLE["lines"][1]) == 2               # expected 12 - delivered 10
+    assert line_pending({"expected": 5, "deliveries": [{"qty": 8, "date": "d"}]}) == 0   # over-delivered clamps to 0
 
 
 def test_delivered_and_picked_up():

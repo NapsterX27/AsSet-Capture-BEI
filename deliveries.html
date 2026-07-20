@@ -583,6 +583,8 @@ async function setTradeReq(issue, trade, requisitioner){
 }
 function lineDelivered(l){ return (l.deliveries||[]).reduce((s,d)=>s+(Number(d.qty)||0),0); }
 function linePickedUp(l){ return (l.pickups||[]).reduce((s,p)=>s+(Number(p.qty)||0),0); }
+function lineExpected(l){ return (l && l.expected!=null && l.expected!=="") ? Number(l.expected) : null; }
+function linePending(l){ const e=lineExpected(l); return e==null ? null : Math.max(0, e - lineDelivered(l)); }
 function lineStatus(delivered, picked){
   if(delivered<=0 && picked<=0) return "Not started";
   if(picked>0 && picked>=delivered) return "Picked up";
@@ -658,9 +660,9 @@ function fillOriginatorFilter(){
 function printSheet(t){
   const m=t.marker||{}; const lines=m.lines||[];
   const rowsHtml=lines.map(l=>{
-    const d=lineDelivered(l), p=linePickedUp(l), st=lineStatus(d,p), ov=lineOverdue(l);
+    const d=lineDelivered(l), p=linePickedUp(l), st=lineStatus(d,p), ov=lineOverdue(l), e=lineExpected(l), pend=linePending(l);
     return `<tr><td>${esc(l.line)}</td><td>${esc(l.part||"")}</td><td>${esc(l.desc||"")}</td><td>${esc(l.uom||"")}</td>`+
-      `<td${ov?' class="ov"':''}>${esc(l.requiredDate||"")}</td><td>${esc(d)}</td><td>${esc(p)}</td><td>${esc(st)}</td><td class="blank"></td></tr>`;
+      `<td${ov?' class="ov"':''}>${esc(l.requiredDate||"")}</td><td>${e==null?"":esc(e)}</td><td>${esc(d)}</td><td>${pend==null?"":esc(pend)}</td><td>${esc(p)}</td><td>${esc(st)}</td><td class="blank"></td></tr>`;
   }).join("");
   const today=new Date().toISOString().slice(0,10);
   const doc=`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Req ${esc(t.reqNumber)} — Pickup sheet</title><style>`+
@@ -685,7 +687,7 @@ function printSheet(t){
     `<div class="hd"><div><div class="wm">Blattner</div><div class="sub">Site Inventory Portal</div></div><div class="sub">Printed ${today}</div></div>`+
     `<h1>Req ${esc(t.reqNumber)} &middot; ${esc(t.trade||"")}</h1>`+
     `<div class="meta">${t.project?esc(t.project)+" &middot; ":""}${lines.length} line${lines.length===1?"":"s"} &middot; ${t.linesComplete}/${t.linesTotal} picked up</div>`+
-    `<table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Required</th><th>Delivered</th><th>Picked up</th><th>Status</th><th>Picked up by / date</th></tr></thead><tbody>${rowsHtml}</tbody></table>`+
+    `<table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Required</th><th>Expected</th><th>Delivered</th><th>Pending</th><th>Picked up</th><th>Status</th><th>Picked up by / date</th></tr></thead><tbody>${rowsHtml}</tbody></table>`+
     `<div class="sign"><div>Received by (print &amp; sign)</div><div>Date</div></div>`+
     `<div class="foot">Blattner Site Inventory Portal &middot; internal use</div>`+
     `</body></html>`;
@@ -733,11 +735,12 @@ function gotoPage(n){ STATE.page=n; render(); const l=$("#list"); if(l) l.scroll
 function renderTracker(t){
   const pct=t.linesTotal?Math.round(100*t.linesComplete/t.linesTotal):0;
   const rows=((t.marker&&t.marker.lines)||[]).map(l=>{
-    const d=lineDelivered(l), p=linePickedUp(l), st=lineStatus(d,p), lp=linePickPct(d,p);
+    const d=lineDelivered(l), p=linePickedUp(l), st=lineStatus(d,p), lp=linePickPct(d,p), e=lineExpected(l), pend=linePending(l);
     const pb=(l.pickups||[]).map(x=>esc(x.by||"")+" ("+esc(x.qty)+(x.date?(" · "+esc(x.date)):"")+")").filter(Boolean).join("<br>");
     const meter='<div class="lmeter'+(st==="Picked up"?" done":"")+'"><span data-w="'+lp+'"></span></div>';
     const admin = STATE.admin && STATE.state==="open"
       ? '<td class="logcell">'+
+          '<div class="ev"><span class="evlbl">Expected</span><input class="exqty" type="text" inputmode="decimal" style="width:64px" placeholder="qty" value="'+(e==null?"":esc(e))+'"><button class="btn small" data-ev="expected|'+t.issue+'|'+esc(l.line)+'">Set</button></div>'+
           '<div class="ev"><span class="evlbl">Deliver</span><input class="dqty" type="text" inputmode="decimal" style="width:64px" placeholder="qty"><button class="btn small" data-ev="delivered|'+t.issue+'|'+esc(l.line)+'">Log</button></div>'+
           '<div class="ev"><span class="evlbl">Pickup</span><input class="pqty" type="text" inputmode="decimal" style="width:64px" placeholder="qty"><input class="pby" type="text" style="width:110px" placeholder="picked up by"><button class="btn small" data-ev="pickup|'+t.issue+'|'+esc(l.line)+'">Log</button></div>'+
         '</td>'
@@ -745,7 +748,9 @@ function renderTracker(t){
     const ov=lineOverdue(l), ds=lineDueSoon(l);
     const reqCell='<td class="'+(ov?"rd-over":(ds?"rd-soon":""))+'">'+esc(l.requiredDate||"")+
       (ov?'<span class="rd-tag">Overdue</span>':(ds?'<span class="rd-tag soon">Due soon</span>':''))+'</td>';
-    return '<tr><td>'+esc(l.line)+'</td><td>'+esc(l.part||"")+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.uom)+'</td>'+reqCell+'<td>'+esc(d)+'</td><td>'+esc(p)+meter+'</td><td class="meta pickedby">'+pb+'</td><td class="'+statusClass(st)+'">'+st+'</td>'+admin+'</tr>';
+    const expCell='<td>'+(e==null?"—":esc(e))+'</td>';
+    const pendCell='<td'+((pend!=null&&pend>0)?' class="rd-over"':'')+'>'+(pend==null?"—":esc(pend))+'</td>';
+    return '<tr><td>'+esc(l.line)+'</td><td>'+esc(l.part||"")+'</td><td>'+esc(l.desc)+'</td><td>'+esc(l.uom)+'</td>'+reqCell+expCell+'<td>'+esc(d)+'</td>'+pendCell+'<td>'+esc(p)+meter+'</td><td class="meta pickedby">'+pb+'</td><td class="'+statusClass(st)+'">'+st+'</td>'+admin+'</tr>';
   }).join("");
   const adminHead = STATE.admin && STATE.state==="open" ? '<th>Log delivery / pickup</th>' : '';
   const isDone = STATE.state==="closed";
@@ -762,7 +767,7 @@ function renderTracker(t){
     '<div class="top" data-toggle="'+t.issue+'"><span class="req">Req '+esc(t.reqNumber)+'</span> '+tradeCtl+overBadge+doneBadge+' '+
       (t.project?'<span class="meta">'+esc(t.project)+'</span>':'')+origMeta+
       '<span class="prog"><span class="lines">'+t.linesComplete+'/'+t.linesTotal+' picked up</span>'+ringSvg(pct)+'</span>'+completeBtn+'</div>'+
-    '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Required</th><th>Delivered</th><th>Picked up</th><th>Picked up by</th><th>Status</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<div class="detail"><div class="table-scroll"><table><thead><tr><th>Line</th><th>Part #</th><th>Description</th><th>UoM</th><th>Required</th><th>Expected</th><th>Delivered</th><th>Pending</th><th>Picked up</th><th>Picked up by</th><th>Status</th>'+adminHead+'</tr></thead><tbody>'+rows+'</tbody></table></div>'+
       '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">'+
       '<button class="btn small secondary" data-print="'+t.issue+'">Print sheet</button>'+
       (STATE.admin?'<button class="btn small secondary" data-delete="'+t.issue+'">Delete order</button>':'')+
@@ -955,6 +960,9 @@ function bind(){
         qty=row.querySelector(".pqty").value.trim(); by=row.querySelector(".pby").value.trim();
         if(!qty||Number(qty)===0){ toast("Enter a pickup quantity"); return; }
         if(!by){ toast("Enter who picked it up"); return; }
+      } else if(kind==="expected"){
+        qty=row.querySelector(".exqty").value.trim();
+        if(qty===""||!isFinite(Number(qty))||Number(qty)<0){ toast("Enter an expected quantity"); return; }
       } else {
         qty=row.querySelector(".dqty").value.trim();
         if(!qty||Number(qty)===0){ toast("Enter a delivered quantity"); return; }
@@ -965,7 +973,7 @@ function bind(){
         const idx=STATE.trackers.findIndex(t=>t.issue===parseInt(issue,10));
         invalidateCache();
         if(res.complete){ if(idx>=0) STATE.trackers.splice(idx,1); toast("Logged — tracker complete"); render(); }
-        else { if(idx>=0 && res.tracker) STATE.trackers[idx]=res.tracker; toast(kind==="pickup"?"Pickup logged":"Delivery logged"); render();
+        else { if(idx>=0 && res.tracker) STATE.trackers[idx]=res.tracker; toast(kind==="pickup"?"Pickup logged":(kind==="expected"?"Expected qty set":"Delivery logged")); render();
           const card=document.querySelector('.trk[data-issue="'+issue+'"]'); if(card) card.classList.add("open"); }
       }catch(err){ toast("Failed: "+err.message); }
       return;
